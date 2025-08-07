@@ -1,0 +1,6 @@
+# Minimal requirements for WhatsApp connectivity testing
+# Only the essential dependencies needed for the test script
+
+httpx>=0.25.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
