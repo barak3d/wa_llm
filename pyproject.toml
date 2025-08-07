@@ -10,14 +10,14 @@ dependencies = [
     "pydantic-settings>=2.7.1",
     "sqlmodel>=0.0.22",
     "httpx>=0.28.1",
-    "pydantic-ai[logfire]>=0.2.14",
+    "pydantic-ai>=0.2.14",
     "asyncpg>=0.30.0",
     "sqlalchemy[asyncio]>=2.0.37",
     "pgvector>=0.3.6",
-    "voyageai>=0.3.2",
+    "openai>=1.12.0",
+    "azure-identity>=1.15.0",
     "tenacity>=9.0.0",
     "alembic>=1.14.1",
-    "logfire[fastapi,httpx,sqlalchemy,system-metrics]>=3.12.0",
 ]
 
 [dependency-groups]

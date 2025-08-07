@@ -2,7 +2,7 @@ import logging
 import httpx
 
 from sqlmodel.ext.asyncio.session import AsyncSession
-from voyageai.client_async import AsyncClient
+from openai import AsyncAzureOpenAI
 
 from handler.router import Router
 from handler.whatsapp_group_link_spam import WhatsappGroupLinkSpamHandler
@@ -20,13 +20,14 @@ class MessageHandler(BaseHandler):
         self,
         session: AsyncSession,
         whatsapp: WhatsAppClient,
-        embedding_client: AsyncClient,
+        embedding_client: AsyncAzureOpenAI,
+        settings,
     ):
-        self.router = Router(session, whatsapp, embedding_client)
+        self.router = Router(session, whatsapp, embedding_client, settings)
         self.whatsapp_group_link_spam = WhatsappGroupLinkSpamHandler(
-            session, whatsapp, embedding_client
+            session, whatsapp, embedding_client, settings
         )
-        super().__init__(session, whatsapp, embedding_client)
+        super().__init__(session, whatsapp, embedding_client, settings)
 
     async def __call__(self, payload: WhatsAppWebhookPayload):
         message = await self.store_message(payload)

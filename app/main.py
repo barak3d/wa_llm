@@ -6,14 +6,13 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 import logging
-import logfire
+from openai import AsyncAzureOpenAI
 
 from api import load_new_kbtopics_api, status, summarize_and_send_to_group_api, webhook
 import models  # noqa
 from config import Settings
 from whatsapp import WhatsAppClient
 from whatsapp.init_groups import gather_groups
-from voyageai.client_async import AsyncClient
 
 settings = Settings()  # pyright: ignore [reportCallIssue]
 
@@ -47,7 +46,6 @@ async def lifespan(app: FastAPI):
         pool_recycle=600,
         future=True,
     )
-    logfire.instrument_sqlalchemy(engine)
     async_session = async_sessionmaker(
         engine, expire_on_commit=False, class_=AsyncSession
     )
@@ -56,8 +54,10 @@ async def lifespan(app: FastAPI):
 
     app.state.db_engine = engine
     app.state.async_session = async_session
-    app.state.embedding_client = AsyncClient(
-        api_key=settings.voyage_api_key, max_retries=settings.voyage_max_retries
+    app.state.embedding_client = AsyncAzureOpenAI(
+        api_key=settings.azure_openai_api_key,
+        azure_endpoint=settings.azure_openai_endpoint,
+        api_version=settings.azure_openai_api_version,
     )
     try:
         yield
@@ -68,11 +68,6 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI app
 app = FastAPI(title="Webhook API", lifespan=lifespan)
 
-logfire.configure()
-logfire.instrument_pydantic_ai()
-logfire.instrument_fastapi(app)
-logfire.instrument_httpx(capture_all=True)
-logfire.instrument_system_metrics()
 
 
 app.include_router(webhook.router)

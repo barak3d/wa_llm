@@ -1,6 +1,6 @@
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
-from voyageai.client_async import AsyncClient
+from openai import AsyncAzureOpenAI
 
 from models import (
     WhatsAppWebhookPayload,
@@ -14,6 +14,7 @@ from models import (
 )
 from whatsapp.jid import normalize_jid
 from whatsapp import WhatsAppClient, SendMessageRequest
+from config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,13 @@ class BaseHandler:
         self,
         session: AsyncSession,
         whatsapp: WhatsAppClient,
-        embedding_client: AsyncClient,
+        embedding_client: AsyncAzureOpenAI,
+        settings: Settings,
     ):
         self.session = session
         self.whatsapp = whatsapp
         self.embedding_client = embedding_client
+        self.settings = settings
 
     async def store_message(
         self,
@@ -104,7 +107,10 @@ class BaseHandler:
             sender_jid=my_number,
             chat_jid=to_jid,
         )
-        return await self.store_message(Message(**new_message.model_dump()))
+        stored_message = await self.store_message(Message(**new_message.model_dump()))
+        if stored_message is None:
+            raise ValueError("Failed to store message: Message is None")
+        return stored_message
 
     async def upsert(self, model):
         return await upsert(self.session, model)

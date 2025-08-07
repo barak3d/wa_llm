@@ -4,9 +4,10 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError
 from sqlmodel import desc, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from voyageai.client_async import AsyncClient
+from openai import AsyncAzureOpenAI
 
 from handler.knowledge_base_answers import KnowledgeBaseAnswers
 from models import Message
@@ -41,14 +42,19 @@ class Router(BaseHandler):
         self,
         session: AsyncSession,
         whatsapp: WhatsAppClient,
-        embedding_client: AsyncClient,
+        embedding_client: AsyncAzureOpenAI,
+        settings,
     ):
         self.ask_knowledge_base = KnowledgeBaseAnswers(
-            session, whatsapp, embedding_client
+            session, whatsapp, embedding_client, settings
         )
-        super().__init__(session, whatsapp, embedding_client)
+        super().__init__(session, whatsapp, embedding_client, settings)
 
     async def __call__(self, message: Message):
+        if message.text is None:
+            logger.warning(f"Received message with no text from {message.sender_jid}")
+            return
+            
         route = await self._route(message.text)
         match route:
             case IntentEnum.summarize:
@@ -62,13 +68,27 @@ class Router(BaseHandler):
 
     async def _route(self, message: str) -> IntentEnum:
         agent = Agent(
-            model="anthropic:claude-4-sonnet-20250514",
+            model=self.settings.get_chat_model(),
             system_prompt="What is the intent of the message? What does the user want us to help with?",
             output_type=Intent,
         )
 
-        result = await agent.run(message)
-        return result.data.intent
+        try:
+            result = await agent.run(message)
+            return result.output.intent
+        except ModelHTTPError as e:
+            if "content_filter" in str(e.body).lower() or "responsibleaipolicyviolation" in str(e.body).lower():
+                logger.warning(f"Content filtered for message routing. Message preview: {message[:50]}...")
+                logger.debug(f"Content filter details: {e.body}")
+                # Default to 'other' for filtered content - safe fallback
+                return IntentEnum.other
+            else:
+                logger.error(f"Model HTTP error in routing: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Unexpected error in message routing: {e}")
+            # Default to 'other' for any other errors to keep bot functioning
+            return IntentEnum.other
 
     async def summarize(self, message: Message):
         time_24_hours_ago = datetime.now() - timedelta(hours=24)
@@ -80,34 +100,75 @@ class Router(BaseHandler):
             .limit(30)
         )
         res = await self.session.exec(stmt)
-        messages: list[Message] = res.all()
+        messages: list[Message] = list(res.all())
+
+        if not messages:
+            await self.send_message(
+                message.chat_jid,
+                "No messages found from today to summarize.",
+                message.message_id,
+            )
+            return
 
         agent = Agent(
-            model="anthropic:claude-4-sonnet-20250514",
+            model=self.settings.get_chat_model(),
             system_prompt="""Summarize the following group chat messages in a few words.
             
-            - You MUST state that this is a summary of TODAY's messages. Even if the user asked for a summary of a different time period (in that case, state that you can only summarize today's messages)
+            LANGUAGE REQUIREMENTS (CRITICAL):
+            - You MUST respond in the EXACT same language as the chat messages
+            - If messages are in Hebrew, respond ONLY in Hebrew
+            - If messages are in English, respond ONLY in English  
+            - If messages are mixed languages, use the DOMINANT language of the messages
+            - NEVER translate or change the language - maintain the original language at all costs
+            - DO NOT default to English or Spanish unless that's the actual language of the messages
+            
+            CONTENT REQUIREMENTS:
+            - You MUST state that this is a summary of TODAY's messages
             - Always personalize the summary to the user's request
             - Keep it short and conversational
-            - Tag users when mentioning them
-            - You MUST respond with the same language as the request
+            - Tag users when mentioning them (e.g., @972536150150)
+            - Even if the user asked for a summary of a different time period, state that you can only summarize today's messages
             """,
             output_type=str,
         )
 
-        response = await agent.run(
-            f"@{parse_jid(message.sender_jid).user}: {message.text}\n\n # History:\n {chat2text(messages)}"
-        )
-        await self.send_message(
-            message.chat_jid,
-            response.data,
-            message.message_id,
-        )
+        try:
+            response = await agent.run(
+                f"@{parse_jid(message.sender_jid).user}: {message.text}\n\n # History:\n {chat2text(messages)}"
+            )
+            await self.send_message(
+                message.chat_jid,
+                response.output,
+                message.message_id,
+            )
+        except ModelHTTPError as e:
+            if "content_filter" in str(e.body).lower() or "responsibleaipolicyviolation" in str(e.body).lower():
+                logger.warning(f"Content filtered during summarization for chat {message.chat_jid}")
+                logger.debug(f"Content filter details: {e.body}")
+                await self.send_message(
+                    message.chat_jid,
+                    "I'm sorry, but I can't summarize today's messages due to content policy restrictions. Some messages may contain content that can't be processed.",
+                    message.message_id,
+                )
+            else:
+                logger.error(f"Model HTTP error in summarization: {e}")
+                await self.send_message(
+                    message.chat_jid,
+                    "I encountered an error while trying to summarize today's messages. Please try again later.",
+                    message.message_id,
+                )
+        except Exception as e:
+            logger.error(f"Unexpected error in summarization: {e}")
+            await self.send_message(
+                message.chat_jid,
+                "I encountered an unexpected error while summarizing. Please try again later.",
+                message.message_id,
+            )
 
     async def about(self, message):
         await self.send_message(
             message.chat_jid,
-            "I'm an open-source bot created for the GenAI Israel community - https://llm.org.il.\nI can help you catch up on the chat messages and answer questions based on the group's knowledge.\nPlease send me PRs and star me at https://github.com/ilanbenb/wa_llm ⭐️",
+            "I'm an open-source bot - \nI can help you catch up on the chat messages and answer questions based on the group's knowledge.",
             message.message_id,
         )
 

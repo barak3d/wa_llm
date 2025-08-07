@@ -14,12 +14,12 @@ from tenacity import (
     stop_after_attempt,
     before_sleep_log,
 )
-from voyageai.client_async import AsyncClient
+from openai import AsyncAzureOpenAI
 
 from models import KBTopicCreate, Group, Message
 from models.knowledge_base_topic import KBTopic
 from models.upsert import bulk_upsert
-from utils.voyage_embed_text import voyage_embed_text
+from utils.azure_openai_embed_text import azure_openai_embed_text
 from whatsapp import WhatsAppClient
 
 logger = logging.getLogger(__name__)
@@ -45,9 +45,9 @@ def _deid_text(message: str, user_mapping: Dict[str, str]) -> str:
     before_sleep=before_sleep_log(logger, logging.DEBUG),
     reraise=True,
 )
-async def conversation_splitter_agent(content: str) -> AgentRunResult[List[Topic]]:
+async def conversation_splitter_agent(content: str, chat_model) -> AgentRunResult[List[Topic]]:
     agent = Agent(
-        model="anthropic:claude-4-sonnet-20250514",
+        model=chat_model,
         # Set bigger then 1024 max token for this agent, because it's a long conversation
         # https://github.com/santokalayil/ai_agents/blame/26b51578ef5864b7f4f0c540e89297867c76d8ab/pydantic_ai/models/anthropic.py#L207C1-L208C1
         model_settings={"max_tokens": 10000},
@@ -101,7 +101,7 @@ def _topic_with_filtered_speakers(
 
 
 async def get_conversation_topics(
-    messages: list[Message], my_number: str
+    messages: list[Message], my_number: str, chat_model
 ) -> List[Topic]:
     if len(messages) == 0:
         return []
@@ -119,23 +119,25 @@ async def get_conversation_topics(
         ]
     )
 
-    result = await conversation_splitter_agent(conversation_content)
+    result = await conversation_splitter_agent(conversation_content, chat_model)
     return [
-        _topic_with_filtered_speakers(topic, speaker_mapping) for topic in result.data
+        _topic_with_filtered_speakers(topic, speaker_mapping) for topic in result.output
     ]
 
 
 async def load_topics(
     db_session: AsyncSession,
     group: Group,
-    embedding_client: AsyncClient,
+    embedding_client: AsyncAzureOpenAI,
     topics: List[Topic],
     start_time: datetime,
 ):
     if len(topics) == 0:
         return
     documents = [f"# {topic.subject}\n{topic.summary}" for topic in topics]
-    topics_embeddings = await voyage_embed_text(embedding_client, documents)
+    # Use a default model name since this function doesn't have access to settings
+    # This should be updated to receive settings as well for consistency
+    topics_embeddings = await azure_openai_embed_text(embedding_client, documents, "text-embedding-3-large")
 
     doc_models = [
         # TODO: Replace topic.subject with something else that is deterministic.
@@ -169,7 +171,7 @@ class topicsLoader:
         self,
         db_session: AsyncSession,
         group: Group,
-        embedding_client: AsyncClient,
+        embedding_client: AsyncAzureOpenAI,
         whatsapp: WhatsAppClient,
     ):
         my_jid = await whatsapp.get_my_jid()
@@ -192,7 +194,10 @@ class topicsLoader:
 
             # The result is ordered by timestamp, so the first message is the oldest
             start_time = messages[0].timestamp
-            topics = await get_conversation_topics(messages, my_jid.user)
+            # Create a default chat model for this function - should be updated to use settings
+            from pydantic_ai.models.openai import OpenAIModel
+            default_chat_model = OpenAIModel("gpt-4o")
+            topics = await get_conversation_topics(messages, my_jid.user, default_chat_model)
             logger.info(f"Loaded {len(topics)} topics for group {group.group_name}")
             await load_topics(db_session, group, embedding_client, topics, start_time)
             logger.info(f"topics loaded for group {group.group_name}")
@@ -203,7 +208,7 @@ class topicsLoader:
     async def load_topics_for_all_groups(
         self,
         session: AsyncSession,
-        embedding_client: AsyncClient,
+        embedding_client: AsyncAzureOpenAI,
         whatsapp: WhatsAppClient,
     ):
         groups = await session.exec(select(Group).where(Group.managed == True))  # noqa: E712 https://stackoverflow.com/a/18998106

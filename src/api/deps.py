@@ -5,7 +5,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from handler import MessageHandler
 from whatsapp import WhatsAppClient
-from voyageai.client_async import AsyncClient
+from openai import AsyncAzureOpenAI
+from config import Settings
 
 
 async def get_db_async_session(request: Request) -> AsyncSession:
@@ -24,14 +25,19 @@ def get_whatsapp(request: Request) -> WhatsAppClient:
     return request.app.state.whatsapp
 
 
-def get_text_embebedding(request: Request) -> AsyncClient:
+def get_text_embebedding(request: Request) -> AsyncAzureOpenAI:
     assert request.app.state.embedding_client, "text embedding not initialized"
     return request.app.state.embedding_client
+
+def get_settings(request: Request) -> Settings:
+    assert request.app.state.settings, "Settings not initialized"
+    return request.app.state.settings
 
 
 async def get_handler(
     session: Annotated[AsyncSession, Depends(get_db_async_session)],
     whatsapp: Annotated[WhatsAppClient, Depends(get_whatsapp)],
-    embedding_client: Annotated[AsyncClient, Depends(get_text_embebedding)],
+    embedding_client: Annotated[AsyncAzureOpenAI, Depends(get_text_embebedding)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> MessageHandler:
-    return MessageHandler(session, whatsapp, embedding_client)
+    return MessageHandler(session, whatsapp, embedding_client, settings)
